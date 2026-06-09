@@ -1,0 +1,405 @@
+# code for mstr_agt.sv
+
+...
+class mstr_agt extends uvm_agent;
+	`uvm_component_utils(mstr_agt)
+
+	mstr_drv drv_h;
+	mstr_mon mon_h;
+	mstr_seqr seqr_h;
+	mstr_agt_cfg m_cfg;
+	
+	function new(string name="mstr_agt", uvm_component parent);
+		super.new(name,parent);
+	endfunction
+
+	function void build_phase(uvm_phase phase);
+		super.build_phase(phase);
+
+	if(!uvm_config_db#(mstr_agt_cfg)::get(this,"","mstr_agt_cfg",m_cfg))
+		`uvm_fatal("in mstr_agt","getting failed")
+
+	mon_h=mstr_mon::type_id::create("mon_h",this);
+
+	if(m_cfg.is_active==UVM_ACTIVE)
+	begin
+		drv_h=mstr_drv::type_id::create("drv_h",this);
+		seqr_h=mstr_seqr::type_id::create("seqr_h",this);
+	end
+	endfunction
+
+	function void connect_phase(uvm_phase phase);
+		if(m_cfg.is_active==UVM_ACTIVE)
+		drv_h.seq_item_port.connect(seqr_h.seq_item_export);
+	endfunction
+endclass
+...
+
+
+# code for mstr_agt_cfg.sv
+
+...
+class mstr_agt_cfg extends uvm_object;
+	`uvm_object_utils(mstr_agt_cfg)
+
+	uvm_active_passive_enum is_active=UVM_ACTIVE;
+	
+	function new(string name="mstr_agt_cfg");
+		super.new(name);
+	endfunction
+
+	virtual ahb_if vif;
+endclass
+...
+
+
+# code for mstr_agt_top.sv
+
+...
+class mstr_agt_top extends uvm_env;
+	`uvm_component_utils(mstr_agt_top)
+
+	env_cfg e_cfg;
+	mstr_agt_cfg m_cfg;
+	mstr_agt m_agt[];
+	
+	function new(string name="mstr_agt_top", uvm_component parent);
+		super.new(name,parent);
+	endfunction
+
+	function void build_phase(uvm_phase phase);
+		super.build_phase(phase);
+
+	if(!uvm_config_db#(env_cfg)::get(this,"","env_cfg",e_cfg))
+		`uvm_fatal("in_mstr_top","getting failed")
+	
+	if(e_cfg.has_mstr_agt)
+	begin
+		m_agt=new[e_cfg.no_of_mstr_agt];
+		foreach(m_agt[i])
+		begin
+		   uvm_config_db#(mstr_agt_cfg)::set(this,$sformatf("m_agt[%0d]*",i),"mstr_agt_cfg",e_cfg.m_cfg[i]);	
+                   m_agt[i]=mstr_agt::type_id::create($sformatf("m_agt[%0d]",i),this);	
+		end
+	end
+	endfunction
+endclass
+...
+
+# code for mstr_drv.sv
+
+
+...
+class mstr_drv extends uvm_driver#(ahb_xtn);
+	`uvm_component_utils(mstr_drv)
+	
+	virtual ahb_if.MSTR_DRV_MP vif;
+	mstr_agt_cfg m_cfg;
+
+	int mstr_drv_cnt;
+
+	function new(string name="mstr_drv", uvm_component parent);
+		super.new(name,parent);
+	endfunction
+
+	function void build_phase(uvm_phase phase);
+		if(!uvm_config_db#(mstr_agt_cfg)::get(this,"","mstr_agt_cfg",m_cfg))
+			`uvm_fatal("IN MSTR DRV", "getting failed")
+	endfunction
+
+	function void connect_phase(uvm_phase phase);
+		vif=m_cfg.vif;
+	endfunction
+
+	task run_phase(uvm_phase phase);  
+
+		@(vif.mstr_drv_cb)
+		vif.mstr_drv_cb.HRESETn <= 0;
+		@(vif.mstr_drv_cb)
+		vif.mstr_drv_cb.HRESETn <= 1;
+
+		forever
+		begin
+		//	$display("11111");
+			seq_item_port.get_next_item(req);
+		//	req.print();
+			send_to_dut(req);
+			seq_item_port.item_done();
+		end
+	endtask
+	
+	task send_to_dut(ahb_xtn req);
+		vif.mstr_drv_cb.HADDR<=req.HADDR;
+		vif.mstr_drv_cb.HTRANS<=req.HTRANS;
+		vif.mstr_drv_cb.HSIZE<=req.HSIZE;
+		vif.mstr_drv_cb.HBURST<=req.HBURST;
+		vif.mstr_drv_cb.HWRITE<=req.HWRITE;
+		//req.sprint();
+
+		@(vif.mstr_drv_cb)
+		wait(vif.mstr_drv_cb.HREADY);
+		if(req.HWRITE)
+			begin
+			vif.mstr_drv_cb.HWDATA<=req.HWDATA;
+			end
+		else
+			begin
+			vif.mstr_drv_cb.HWDATA<=0;
+			req.HRDATA=vif.mstr_drv_cb.HRDATA;
+			end
+
+		mstr_drv_cnt++;
+		$display("Mstr Driver count: %0d",mstr_drv_cnt);
+
+		`uvm_info("mstr_drv",req.sprint(),UVM_LOW)
+
+
+	endtask
+endclass
+...
+
+
+# code for mstr_mon.sv
+
+...
+class mstr_mon extends uvm_monitor;
+	`uvm_component_utils(mstr_mon)
+	
+	virtual ahb_if.MSTR_MON_MP vif;
+	mstr_agt_cfg m_cfg;
+	uvm_analysis_port#(ahb_xtn) ap;
+	ahb_xtn req;
+
+	int mstr_mon_cnt;
+
+	function new(string name="mstr_mon", uvm_component parent);
+		super.new(name,parent);
+		ap=new("ap",this);
+		req=ahb_xtn::type_id::create("req");
+	endfunction
+
+	function void build_phase(uvm_phase phase);
+			if(!uvm_config_db#(mstr_agt_cfg)::get(this,"","mstr_agt_cfg",m_cfg))
+			`uvm_fatal("IN MSTR MON", "getting failed")
+	endfunction
+
+	function void connect_phase(uvm_phase phase);
+		vif=m_cfg.vif;
+	endfunction
+
+	task run_phase(uvm_phase phase);
+		forever
+		begin
+			collect_data();
+		end
+	endtask
+
+	task collect_data();
+		wait(vif.mstr_mon_cb.HTRANS==2'b10 || vif.mstr_mon_cb.HTRANS==2'b11)   //ready
+			req.HADDR=vif.mstr_mon_cb.HADDR;
+			req.HSIZE=vif.mstr_mon_cb.HSIZE;
+			req.HBURST=vif.mstr_mon_cb.HBURST;
+			req.HWRITE=vif.mstr_mon_cb.HWRITE;
+			req.HTRANS=vif.mstr_mon_cb.HTRANS;
+			req.HREADY=vif.mstr_mon_cb.HREADY;
+
+		@(vif.mstr_mon_cb);
+		wait(vif.mstr_mon_cb.HREADY)
+		if(vif.mstr_mon_cb.HWRITE)
+			req.HWDATA=vif.mstr_mon_cb.HWDATA;
+		else
+			req.HRDATA=vif.mstr_mon_cb.HRDATA;
+
+	mstr_mon_cnt++;
+        $display("Mstr Monitor count: %0d",mstr_mon_cnt);
+
+	`uvm_info("mstr_mon",req.sprint(),UVM_LOW)
+	ap.write(req);
+	endtask
+	
+endclass
+...
+
+
+# code for mstr_seqr.sv
+
+
+...
+class mstr_seqr extends uvm_sequencer#(ahb_xtn);
+	`uvm_component_utils(mstr_seqr)
+	
+	function new(string name="mstr_seqr",uvm_component parent);
+		super.new(name,parent);
+	endfunction
+endclass
+...
+
+
+# code for mstr_seqs.sv
+
+
+...
+class mstr_seqs extends uvm_sequence#(ahb_xtn);
+	`uvm_object_utils(mstr_seqs)
+	
+	function new(string name="mstr_seqs");
+		super.new(name);
+	endfunction
+endclass
+
+class single_seqs extends mstr_seqs;
+	`uvm_object_utils(single_seqs)
+	
+	function new(string name="single_seqs");
+		super.new(name);
+	endfunction
+	
+	task body();
+		req=ahb_xtn::type_id::create("req");
+
+		start_item(req);
+		assert(req.randomize() with {HBURST==0; HTRANS==2;});  //non-seq
+		uvm_config_db #(bit[9:0])::set(null,"*","length",req.length);
+		finish_item(req);
+
+		//uvm_config_db#(bit[9:0])::set(null,"*","length",req.length);
+		start_item(req);
+		assert(req.randomize() with {HBURST==0; HTRANS==0;});  //idle
+		finish_item(req);
+	endtask
+endclass
+
+class incr_seqs extends mstr_seqs;
+	`uvm_object_utils(incr_seqs)
+	
+	function new(string name="incr_seqs");
+		super.new(name);
+	endfunction
+
+	bit[31:0]haddr;
+	bit [2:0]hburst, hsize;
+	bit hwrite;
+	bit [9:0]length;
+
+	task body();
+		req=ahb_xtn::type_id::create("req");
+
+		start_item(req);
+		assert(req.randomize() with {HBURST inside {3,5,7};
+					     HTRANS==2;}); //non-seq
+		uvm_config_db #(bit[9:0])::set(null,"*","length",req.length);
+
+		finish_item(req);
+
+		haddr=req.HADDR;
+		hburst=req.HBURST;
+		hsize=req.HSIZE;
+		hwrite=req.HWRITE;
+		length=req.length;
+
+		for(int i=0; i<length-1; i++)
+		begin
+			start_item(req);
+			assert(req.randomize() with {HTRANS==3;  //seq
+						     HADDR==haddr+(2**hsize);
+						     HSIZE==hsize;
+						     HBURST==hburst;
+						     HWRITE==hwrite;});
+			finish_item(req);
+				haddr=req.HADDR;
+		end
+
+			start_item(req);
+			assert(req.randomize() with {HTRANS==0;  //idle
+						     HADDR==haddr+(2**hsize);
+						     HSIZE==hsize;
+						     HBURST==hburst;
+						     HWRITE==hwrite;});
+			finish_item(req);
+	endtask
+endclass
+	
+class wrap_seqs extends mstr_seqs;
+	`uvm_object_utils(wrap_seqs)
+	
+	function new(string name="wrap_seqs");
+		super.new(name);
+	endfunction
+
+	bit[31:0]haddr;
+	bit [2:0]hburst, hsize;
+	bit hwrite;
+	bit [9:0]length;
+	bit [31:0]SA, WB; //start addr , wrap boundary
+
+	task body();
+		req=ahb_xtn::type_id::create("req");
+
+		start_item(req);
+		assert(req.randomize() with {HBURST inside {2,4,6};
+					     HTRANS==2;});  //non-seq
+		uvm_config_db #(bit[9:0])::set(null,"*","length",req.length);
+
+		finish_item(req);
+
+	//	uvm_config_db#(bit[9:0])::set(null,"*","length",req.length);
+		haddr=req.HADDR;
+		hburst=req.HBURST;
+		hsize=req.HSIZE;
+		hwrite=req.HWRITE;
+		length=req.length;
+
+		SA=(haddr/((2**hsize)*length)) * ((2**hsize)*length);
+		WB=SA+((2**hsize)*length);
+		
+		for(int i=0; i<length-1; i++)
+		begin
+			haddr=(2**hsize)+haddr;
+			if(haddr==WB)
+				haddr=SA;
+
+			start_item(req);
+			assert(req.randomize() with {HTRANS==3;  //seq
+						     HADDR==haddr;
+						     HSIZE==hsize;
+						     HBURST==hburst;
+						     HWRITE==hwrite;});
+			finish_item(req);
+				haddr=req.HADDR;
+		end
+
+			start_item(req);
+			assert(req.randomize() with {HTRANS==0;  //idle
+						     HADDR==haddr;
+						     HSIZE==hsize;
+						     HBURST==hburst;
+						     HWRITE==hwrite;});
+			finish_item(req);
+	endtask
+endclass
+...
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
